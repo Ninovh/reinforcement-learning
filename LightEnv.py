@@ -21,25 +21,25 @@ class D2Escape(gym.Env):
     Observation:
         Type: Box(1)
         Num	Observation                 Min         Max
-        0	Player Location             0           10
+        0	Mirror angle                20          70
+        1   Goal location               0           100
 
     Actions:
         Type: Discrete(4)
         Num	Action
-        0	Up
-        1	Left
-        2   Down
-        3   Right
+        0	Decrease
+        1	Increase
 
     Reward:
-        Reward is -1 for every step taken.
+        Reward is -1 for every step taken for every step NOT hitting the goal.
+        Reward is 1 for every step < 5 from the goal.
 
     Starting State:
-        The player starts somewhere between (3,3) and (7,7).
+        The mirror starts randomly between 22.5 and 67.5.
+        The goal starts randomly between 0 and 100
 
     Episode Termination:
-        Player is at location (0,0).
-        Player is at location (10,10).
+        100 Steps have passed.
     """
 
     metadata = {
@@ -47,21 +47,23 @@ class D2Escape(gym.Env):
         'video.frames_per_second': 50
     }
 
-    def __init__(self, size, error_chance):
+    def __init__(self):
 
-        self.error_chance = error_chance
+        self.screen_size = 700
 
-        self.lowest = 0
-        self.highest = size - 1
+        self.lowest_angle = 20
+        self.highest_angle = 70
 
-        self.low = np.array([self.lowest, self.lowest])
-        self.high = np.array([self.highest, self.highest])
+        self.lowest_goal = 0
+        self.highest_goal = 100
 
-        self.traps = [self.lowest + int((self.highest - self.lowest) / 4),
-                      self.highest - int((self.highest - self.lowest) / 4)]
+        self.low = np.array([self.lowest_angle, self.lowest_goal])
+        self.high = np.array([self.highest_angle, self.highest_goal])
 
-        self.action_space = spaces.Discrete(4)
+        self.action_space = spaces.Discrete(2)
         self.observation_space = spaces.Box(self.low, self.high)
+
+        self.stepnr = 0
 
         self.seed()
         self.viewer = None
@@ -75,77 +77,43 @@ class D2Escape(gym.Env):
         assert self.action_space.contains(action), "%r (%s) invalid" % (action, type(action))
         state = self.state
 
-        # Simulate errors
-        if self.error_chance > 0:
-            action = self.determine_action(action)
-
-        # Move player according to action
-        self.move_player(action, state)
-
-        # Reset to valid position
-        reward = -99
-        if self.state[0] < self.lowest:
-            self.state[0] = self.lowest
-        elif self.state[1] < self.lowest:
-            self.state[1] = self.lowest
-        elif self.state[0] > self.highest:
-            self.state[0] = self.highest
-        elif self.state[1] > self.highest:
-            self.state[1] = self.highest
-        # If position is valid already
+        # Move the mirror
+        if action == 0:
+            if state[0] > self.lowest_angle:
+                state[0] = state[0] - 1
         else:
-            reward = -1
+            if state[0] < self.highest_angle:
+                state[0] = state[0] + 1
 
-        # If on a trap
-        for i in self.traps:
-            for j in self.traps:
-                if self.state[0] == i and self.state[1] == j:
-                    reward = -99
+        # Compute reward based on old goal location
+        goal_location = (state[1] / 100) * self.screen_size
+        real_location = ((self.highest_angle - state[0]) / (self.highest_angle - self.lowest_angle)) * self.screen_size
 
-        done = False
-        # If on exit, game finished
-        for i in [self.lowest, self.highest]:
-            for j in [self.lowest, self.highest]:
-                if self.state[0] == i and self.state[1] == j:
-                    reward = 99
-                    done = True
+        reward = -1
+        if math.pow(goal_location - real_location, 2) < math.pow(self.screen_size / 20, 2):
+            reward = 1
+
+        # Change goal location
+        state[1] = state[1] + np.random.rand() * 4 - 2
+        if state[1] < 0 or state[1] > 100:
+            state[1] = self.state[1]
+
+        self.stepnr = self.stepnr + 1
+
+        done = False if self.stepnr < 200 else True
 
         return np.array(self.state), reward, done, {}
 
-    def move_player(self, action, state):
-        if action == 0:
-            self.state = state + [0, -1]
-        elif action == 1:
-            self.state = state + [-1, 0]
-        elif action == 2:
-            self.state = state + [0, 1]
-        else:  # action == 3
-            self.state = state + [1, 0]
-
-    def determine_action(self, action):
-        chance = np.random.rand()
-        if chance > 1 - (self.error_chance / 3):
-            action = (action + 1) % 4
-            pass
-        elif chance > 1 - 2 * (self.error_chance / 3):
-            action = (action + 2) % 4
-            pass
-        elif chance > 1 - 3 * (self.error_chance / 3):
-            action = (action + 3) % 4
-            pass
-        else:
-            pass
-        return action
-
     def reset(self):
-        self.state = self.np_random.randint(low=self.lowest + (self.highest - self.lowest) * .4,
-                                            high=self.highest - (self.highest - self.lowest) * .4 + 2, size=(2,))
+        self.angle = self.np_random.rand() * (self.highest_angle - self.lowest_angle) + self.lowest_angle
+        self.goal = self.np_random.rand() * (self.highest_goal - self.lowest_goal) + self.lowest_goal
+        self.state = [self.angle, self.goal]
+        self.stepnr = 0
         return np.array(self.state)
 
     def render(self, mode='human'):
-        screen_size = 700
-        screen_width = screen_size
-        screen_height = screen_size
+        screen_width = self.screen_size
+        screen_height = self.screen_size
 
         if self.viewer is None:
             self.viewer = rendering.Viewer(screen_width, screen_height)
@@ -166,22 +134,22 @@ class D2Escape(gym.Env):
             # First light beam
             first_beam = rendering.Line((0 + screen_width / 30, screen_height / 2),
                                         (screen_width / 2, screen_height / 2))
-            first_beam.set_color(255, 255, 0)
+            first_beam.set_color(1, 1, 0)
             self.viewer.add_geom(first_beam)
 
             # Second light beam
             self.second_beam = rendering.Line((screen_width / 2, screen_height / 2),
                                               (screen_width / 2, screen_height))
-            self.second_beam.set_color(255, 255, 0)
+            self.second_beam.set_color(1, 1, 0)
             self.viewer.add_geom(self.second_beam)
 
             # Goal
-            goal = rendering.make_circle(screen_size / 40)
+            self.goal = rendering.make_circle(self.screen_size / 40)
             self.goaltrans = rendering.Transform()
-            goal.add_attr(self.goaltrans)
-            goal.set_color(0, .5, 0)
-            self.goaltrans.set_translation(screen_width / 2, screen_height)
-            self.viewer.add_geom(goal)
+            self.goal.add_attr(self.goaltrans)
+            self.goal.set_color(0, .5, 0)
+            self.goaltrans.set_translation(screen_width * (self.state[1] / 100), screen_height)
+            self.viewer.add_geom(self.goal)
 
             # Mirror
             mirror_w = screen_width / 30
@@ -199,11 +167,16 @@ class D2Escape(gym.Env):
 
         x = self.state
 
-        # self.mirrortrans.set_rotation(self.mirrortrans.rotation + .01)
+        self.mirrortrans.set_rotation(x[0] / 57.29577951308232)
 
-        self.mirrortrans.set_rotation(67.5/57.29577951308232)
-        self.second_beam = rendering.make_polyline([(0,0),(500,500)])
+        beam_pos = (self.highest_angle - x[0]) / (self.highest_angle - self.lowest_angle)
+        self.second_beam.__init__((screen_width / 2, screen_height / 2), (beam_pos * screen_width, screen_height))
+        self.second_beam.set_color(1, 1, 0)
+
+        self.goaltrans.set_translation(screen_width * (x[1] / 100), screen_height)
+
         return self.viewer.render(return_rgb_array=mode == 'rgb_array')
 
-    def close(self):
-        if self.viewer: self.viewer.close()
+
+def close(self):
+    if self.viewer: self.viewer.close()
